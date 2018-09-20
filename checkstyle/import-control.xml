@@ -25,6 +25,7 @@
   <!-- common library dependencies -->
   <allow pkg="java" />
   <allow pkg="javax.management" />
+  <allow pkg="io.netty" />
   <allow pkg="org.slf4j" />
   <allow pkg="org.junit" />
   <allow pkg="org.hamcrest" />
@@ -156,6 +157,7 @@
     <allow pkg="org.apache.kafka.common" />
     <allow pkg="org.apache.kafka.clients" exact-match="true"/>
     <allow pkg="org.apache.kafka.test" />
+    <allow pkg="io.netty" />
 
     <subpackage name="consumer">
       <allow pkg="org.apache.kafka.clients.consumer" />

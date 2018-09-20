@@ -26,6 +26,7 @@
   <allow pkg="java" />
   <allow pkg="scala" />
   <allow pkg="javax.management" />
+  <allow pkg="io.netty" />
   <allow pkg="org.slf4j" />
   <allow pkg="org.junit" />
   <allow pkg="org.easymock" />

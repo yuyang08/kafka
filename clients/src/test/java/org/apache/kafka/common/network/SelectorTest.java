@@ -82,6 +82,8 @@ public class SelectorTest {
         Map<String, Object> configs = new HashMap<>();
         this.server = new EchoServer(SecurityProtocol.PLAINTEXT, configs);
         this.server.start();
+        Thread.sleep(1000);
+
         this.time = new MockTime();
         this.channelBuilder = new PlaintextChannelBuilder(ListenerName.forSecurityProtocol(SecurityProtocol.PLAINTEXT));
         this.channelBuilder.configure(configs);
@@ -629,8 +631,10 @@ public class SelectorTest {
     }
 
     private String blockingRequest(String node, String s) throws IOException {
+        System.out.println("sending to " + node + " : " + s);
         selector.send(createSend(node, s));
         selector.poll(1000L);
+
         while (true) {
             selector.poll(1000L);
             for (NetworkReceive receive : selector.completedReceives())

@@ -823,6 +823,9 @@ project(':clients') {
     compile libs.lz4
     compile libs.snappy
     compile libs.slf4jApi
+    compile libs.nettyBuffer
+    compile libs.nettyHandler
+    compile libs.nettyTcnativeBoringsslStatic
     compileOnly libs.jacksonDatabind // for SASL/OAUTHBEARER bearer token parsing
 
     jacksonDatabindConfig libs.jacksonDatabind // to publish as provided scope dependency.

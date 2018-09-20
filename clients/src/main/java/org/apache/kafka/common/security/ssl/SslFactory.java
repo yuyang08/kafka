@@ -16,6 +16,9 @@
  */
 package org.apache.kafka.common.security.ssl;
 
+import java.security.SecureRandom;
+import javax.net.ssl.KeyManager;
+import javax.net.ssl.SSLContext;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.Reconfigurable;
 import org.apache.kafka.common.config.ConfigException;
@@ -25,9 +28,12 @@ import org.apache.kafka.common.network.Mode;
 import org.apache.kafka.common.config.types.Password;
 import org.apache.kafka.common.utils.Utils;
 
-import javax.net.ssl.KeyManager;
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslProvider;
+
 import javax.net.ssl.KeyManagerFactory;
-import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLEngineResult;
 import javax.net.ssl.SSLException;
@@ -41,7 +47,6 @@ import java.nio.file.Paths;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.security.Principal;
-import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
@@ -70,7 +75,8 @@ public class SslFactory implements Reconfigurable {
     private String[] enabledProtocols;
     private String endpointIdentification;
     private SecureRandom secureRandomImplementation;
-    private SSLContext sslContext;
+    private SslContext sslContext;
+    private SSLContext jdkSslContext;
     private boolean needClientAuth;
     private boolean wantClientAuth;
 
@@ -135,6 +141,7 @@ public class SslFactory implements Reconfigurable {
                          (Password) configs.get(SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG));
         try {
             this.sslContext = createSSLContext(keystore, truststore);
+            this.jdkSslContext = createJdkSSLContext(keystore, truststore);
         } catch (Exception e) {
             throw new KafkaException(e);
         }
@@ -206,21 +213,21 @@ public class SslFactory implements Reconfigurable {
     }
 
     // package access for testing
-    SSLContext createSSLContext(SecurityStore keystore, SecurityStore truststore) throws GeneralSecurityException, IOException  {
-        SSLContext sslContext;
-        if (provider != null)
-            sslContext = SSLContext.getInstance(protocol, provider);
-        else
-            sslContext = SSLContext.getInstance(protocol);
-
-        KeyManager[] keyManagers = null;
+    SslContext createSSLContext(SecurityStore keystore, SecurityStore truststore) throws GeneralSecurityException, IOException  {
+        KeyManagerFactory kmf;
         if (keystore != null) {
-            String kmfAlgorithm = this.kmfAlgorithm != null ? this.kmfAlgorithm : KeyManagerFactory.getDefaultAlgorithm();
-            KeyManagerFactory kmf = KeyManagerFactory.getInstance(kmfAlgorithm);
+            String kmfAlgorithm =
+                this.kmfAlgorithm != null ? this.kmfAlgorithm : KeyManagerFactory.getDefaultAlgorithm();
+            kmf = KeyManagerFactory.getInstance(kmfAlgorithm);
+
             KeyStore ks = keystore.load();
             Password keyPassword = keystore.keyPassword != null ? keystore.keyPassword : keystore.password;
             kmf.init(ks, keyPassword.value().toCharArray());
-            keyManagers = kmf.getKeyManagers();
+        } else {
+            // initialize with default option, otherwise tests will fail
+            kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            //KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+            kmf.init(null, null);
         }
 
         String tmfAlgorithm = this.tmfAlgorithm != null ? this.tmfAlgorithm : TrustManagerFactory.getDefaultAlgorithm();
@@ -228,7 +235,25 @@ public class SslFactory implements Reconfigurable {
         KeyStore ts = truststore == null ? null : truststore.load();
         tmf.init(ts);
 
-        sslContext.init(keyManagers, tmf.getTrustManagers(), this.secureRandomImplementation);
+        SslContext sslContext;
+        if (mode == Mode.CLIENT) {
+            if (provider != null)
+                sslContext = SslContextBuilder.forClient().keyManager(kmf).trustManager(tmf).protocols(protocol)
+                    .sslProvider(Enum.valueOf(SslProvider.class, provider)).build();
+
+            else
+                sslContext = SslContextBuilder.forClient().keyManager(kmf)
+                    .trustManager(tmf).protocols(protocol).build();
+        } else {
+            if (provider != null)
+                sslContext = SslContextBuilder.forServer(kmf).trustManager(tmf).protocols(protocol)
+                    .sslProvider(Enum.valueOf(SslProvider.class, provider)).build();
+            else
+                sslContext = SslContextBuilder.forServer(kmf).trustManager(tmf).sslProvider(SslProvider.OPENSSL)
+                    .protocols(protocol).build();
+
+        }
+
         boolean verifyKeystore = keystore != null && keystore != this.keystore;
         boolean verifyTruststore = truststore != null && truststore != this.truststore;
         if (verifyKeystore || verifyTruststore) {
@@ -246,12 +271,53 @@ public class SslFactory implements Reconfigurable {
         return sslContext;
     }
 
+    // package access for testing
+    SSLContext createJdkSSLContext(SecurityStore keystore, SecurityStore truststore) throws GeneralSecurityException, IOException  {
+        SSLContext jdkSslContext;
+        if (provider != null)
+            jdkSslContext = SSLContext.getInstance(protocol, provider);
+        else
+            jdkSslContext = SSLContext.getInstance(protocol);
+
+        KeyManager[] keyManagers = null;
+        if (keystore != null) {
+            String kmfAlgorithm = this.kmfAlgorithm != null ? this.kmfAlgorithm : KeyManagerFactory.getDefaultAlgorithm();
+            KeyManagerFactory kmf = KeyManagerFactory.getInstance(kmfAlgorithm);
+            KeyStore ks = keystore.load();
+            Password keyPassword = keystore.keyPassword != null ? keystore.keyPassword : keystore.password;
+            kmf.init(ks, keyPassword.value().toCharArray());
+            keyManagers = kmf.getKeyManagers();
+        }
+
+        String tmfAlgorithm = this.tmfAlgorithm != null ? this.tmfAlgorithm : TrustManagerFactory.getDefaultAlgorithm();
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance(tmfAlgorithm);
+        KeyStore ts = truststore == null ? null : truststore.load();
+        tmf.init(ts);
+
+        jdkSslContext.init(keyManagers, tmf.getTrustManagers(), this.secureRandomImplementation);
+        boolean verifyKeystore = keystore != null && keystore != this.keystore;
+        boolean verifyTruststore = truststore != null && truststore != this.truststore;
+        if (verifyKeystore || verifyTruststore) {
+            if (this.keystore == null)
+                throw new ConfigException("Cannot add SSL keystore to an existing listener for which no keystore was configured.");
+            if (keystoreVerifiableUsingTruststore) {
+                SSLConfigValidatorEngine.validate(this, jdkSslContext, this.jdkSslContext);
+                SSLConfigValidatorEngine.validate(this, this.jdkSslContext, jdkSslContext);
+            }
+            if (verifyKeystore &&
+                !CertificateEntries.create(this.keystore.load()).equals(CertificateEntries.create(keystore.load()))) {
+                throw new ConfigException("Keystore DistinguishedName or SubjectAltNames do not match");
+            }
+        }
+        return jdkSslContext;
+    }
+
+
     public SSLEngine createSslEngine(String peerHost, int peerPort) {
         return createSslEngine(sslContext, peerHost, peerPort);
     }
 
-    private SSLEngine createSslEngine(SSLContext sslContext, String peerHost, int peerPort) {
-        SSLEngine sslEngine = sslContext.createSSLEngine(peerHost, peerPort);
+    private void sslEngineInitialization(SSLEngine sslEngine) {
         if (cipherSuites != null) sslEngine.setEnabledCipherSuites(cipherSuites);
         if (enabledProtocols != null) sslEngine.setEnabledProtocols(enabledProtocols);
 
@@ -269,6 +335,17 @@ public class SslFactory implements Reconfigurable {
             sslParams.setEndpointIdentificationAlgorithm(endpointIdentification);
             sslEngine.setSSLParameters(sslParams);
         }
+    }
+
+    private SSLEngine createSslEngine(SslContext sslContext, String peerHost, int peerPort) {
+        SSLEngine sslEngine = sslContext.newEngine(ByteBufAllocator.DEFAULT, peerHost, peerPort);
+        sslEngineInitialization(sslEngine);
+        return sslEngine;
+    }
+
+    private SSLEngine createSslEngine(SSLContext sslContext, String peerHost, int peerPort) {
+        SSLEngine sslEngine = sslContext.createSSLEngine(peerHost, peerPort);
+        sslEngineInitialization(sslEngine);
         return sslEngine;
     }
 
@@ -276,8 +353,12 @@ public class SslFactory implements Reconfigurable {
      * Returns a configured SSLContext.
      * @return SSLContext.
      */
-    public SSLContext sslContext() {
+    public SslContext sslContext() {
         return sslContext;
+    }
+
+    public SSLContext jdkSslContext() {
+        return jdkSslContext;
     }
 
     private SecurityStore createKeystore(String type, String path, Password password, Password keyPassword) {
@@ -346,6 +427,22 @@ public class SslFactory implements Reconfigurable {
         private ByteBuffer appBuffer;
         private ByteBuffer netBuffer;
 
+        static void validate(SslFactory sslFactory, SslContext clientSslContext, SslContext serverSslContext) throws SSLException {
+            SSLConfigValidatorEngine clientEngine = new SSLConfigValidatorEngine(sslFactory, clientSslContext, Mode.CLIENT);
+            SSLConfigValidatorEngine serverEngine = new SSLConfigValidatorEngine(sslFactory, serverSslContext, Mode.SERVER);
+            try {
+                clientEngine.beginHandshake();
+                serverEngine.beginHandshake();
+                while (!serverEngine.complete() || !clientEngine.complete()) {
+                    clientEngine.handshake(serverEngine);
+                    serverEngine.handshake(clientEngine);
+                }
+            } finally {
+                clientEngine.close();
+                serverEngine.close();
+            }
+        }
+
         static void validate(SslFactory sslFactory, SSLContext clientSslContext, SSLContext serverSslContext) throws SSLException {
             SSLConfigValidatorEngine clientEngine = new SSLConfigValidatorEngine(sslFactory, clientSslContext, Mode.CLIENT);
             SSLConfigValidatorEngine serverEngine = new SSLConfigValidatorEngine(sslFactory, serverSslContext, Mode.SERVER);
@@ -360,6 +457,13 @@ public class SslFactory implements Reconfigurable {
                 clientEngine.close();
                 serverEngine.close();
             }
+        }
+
+        private SSLConfigValidatorEngine(SslFactory sslFactory, SslContext sslContext, Mode mode) {
+            this.sslEngine = sslFactory.createSslEngine(sslContext, "localhost", 0); // these hints are not used for validation
+            //sslEngine.setUseClientMode(mode == Mode.CLIENT);
+            appBuffer = ByteBuffer.allocate(sslEngine.getSession().getApplicationBufferSize());
+            netBuffer = ByteBuffer.allocate(sslEngine.getSession().getPacketBufferSize());
         }
 
         private SSLConfigValidatorEngine(SslFactory sslFactory, SSLContext sslContext, Mode mode) {
